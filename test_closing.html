@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>test</title></head>
+<body>
+<pre id="out">INIZIO</pre>
+
+<!-- Disattiva il listener DOMContentLoaded del file (non serve Babylon per i test) -->
+<script>
+  window.addEventListener = function () {};
+</script>
+
+<!-- Il file vero: definisce simulaPercorsoMath, trovaCamminoChiusura, chiudiConBezier, ecc. -->
+<script src="real_racing_4_fine.js"></script>
+
+<!-- Banco di prova: usa direttamente le funzioni globali del file -->
+<script>
+(function () {
+  const out = document.getElementById('out');
+  const log = (s) => { out.textContent += '\n' + s; };
+
+  // stub mesh + shadow (box e shadowGenerator sono let globali del file)
+  box = {
+    createInstance(name) {
+      return {
+        name, isVisible: false, parent: null,
+        rotation: { x: 0, y: 0, z: 0 },
+        position: { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } },
+      };
+    }
+  };
+  shadowGenerator = { addShadowCaster() {} };
+
+  const HP = Math.PI / 2;
+  const angleDelta = (t) => t === 2 ? HP : t === 3 ? -HP : 0;
+  function stepPose(p, tipo) {
+    const pts = simulaPercorsoMath(p.x, p.z, p.y, p.a, tipo);
+    const last = pts[pts.length - 1];
+    return { x: last.x, z: last.z, y: last.y, a: p.a + angleDelta(tipo) };
+  }
+  const normA = (x) => { const TAU = 2 * Math.PI; x %= TAU; return x < 0 ? x + TAU : x; };
+  const aDiff = (a, b) => { const d = normA(a - b); return d > Math.PI ? 2 * Math.PI - d : d; };
+
+  function buildTrack(start, seq) {
+    let p = Object.assign({}, start);
+    for (const tipo of seq) {
+      addToTrackHash(simulaPercorsoMath(p.x, p.z, p.y, p.a, tipo));
+      p = stepPose(p, tipo);
+    }
+    return p;
+  }
+
+  let allPass = true;
+
+  function runScenario(name, start, seq) {
+    trackHash.clear();
+    cubetti.length = 0;
+
+    const end = buildTrack(start, seq);
+    p0 = { position: { x: start.x, y: start.y, z: start.z }, rotation: { y: start.a } };
+    currentPivot = { position: { x: end.x, y: end.y, z: end.z }, rotation: { y: end.a } };
+
+    const t0 = Date.now();
+    const pathSeq = trovaCamminoChiusura();
+    const elapsed = Date.now() - t0;
+
+    let afterSearch = Object.assign({}, end);
+    for (const tipo of pathSeq) afterSearch = stepPose(afterSearch, tipo);
+    const residPos = Math.hypot(afterSearch.x - start.x, afterSearch.z - start.z);
+    const residY   = Math.abs(afterSearch.y - start.y);
+    const residAng = aDiff(afterSearch.a, start.a) * 180 / Math.PI;
+
+    currentPivot = {
+      position: { x: afterSearch.x, y: afterSearch.y, z: afterSearch.z },
+      rotation: { y: afterSearch.a }
+    };
+    const before = cubetti.length;
+    chiudiRaccordo();
+    const nb = cubetti.slice(before);
+
+    let maxGap = 0, maxKink = 0, minY = Infinity;
+    for (let i = 0; i < nb.length; i++) {
+      minY = Math.min(minY, nb[i].position.y);
+      if (i > 0) {
+        const a = nb[i - 1].position, b = nb[i].position;
+        maxGap = Math.max(maxGap, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z));
+        maxKink = Math.max(maxKink, aDiff(nb[i].rotation.y, nb[i - 1].rotation.y));
+      }
+    }
+    const lastBlock = nb.length ? nb[nb.length - 1].position : afterSearch;
+    const finalGap = Math.hypot(lastBlock.x - start.x, lastBlock.y - start.y, lastBlock.z - start.z);
+
+    const d = dist;
+    const okGap = maxGap < d * 1.6, okKink = maxKink < 0.40,
+          okUnder = minY >= -0.31, okFinal = finalGap < d * 2.5;
+    const pass = okGap && okKink && okUnder && okFinal;
+    allPass = allPass && pass;
+
+    log('');
+    log('* ' + name);
+    log('  search: ' + pathSeq.length + ' pezzi ' + elapsed + 'ms  residuo pos=' +
+        residPos.toFixed(2) + ' y=' + residY.toFixed(2) + ' ang=' + residAng.toFixed(1) + 'deg');
+    log('  bezier: ' + nb.length + ' blocchi  maxGap=' + maxGap.toFixed(3) + (okGap?' OK':' BAD') +
+        '  maxKink=' + (maxKink*180/Math.PI).toFixed(1) + 'deg' + (okKink?' OK':' BAD') +
+        '  minY=' + (minY===Infinity?'-':minY.toFixed(2)) + (okUnder?' OK':' BAD') +
+        '  finalGap=' + finalGap.toFixed(2) + (okFinal?' OK':' BAD'));
+    log('  => ' + (pass ? 'OK' : 'FAIL'));
+  }
+
+  const S = { x: -5, y: 0, z: -5, a: 0 };
+  try {
+    runScenario('Rettilineo lungo',      S, [1,1,1,1,1,1]);
+    runScenario('Percorso a L',          S, [1,1,1,2,1,1,1]);
+    runScenario('Dopo giro della morte', S, [1,1,4,1,1]);
+    runScenario('Dopo spirale salita',   S, [1,1,6,1,1]);
+    runScenario('Salita poi discesa',    S, [1,6,1,5,1]);
+    runScenario('Misto complesso',       S, [1,2,1,6,1,3,1,4,1]);
+    runScenario('Quasi chiuso',          S, [1,2,2,1]);
+    runScenario('Doppio giro morte',     S, [1,4,1,4,1]);
+
+    // ── Fuzz test: pose casuali dirette, solo raccordo di Dubins ──
+    function fuzzDubins(n) {
+      let worstKink = 0, worstGap = 0, worstFinal = 0, fails = 0, cusp = 0;
+      let rng = 12345;
+      const rnd = () => { rng = (rng * 1103515245 + 12345) & 0x7fffffff; return rng / 0x7fffffff; };
+      for (let i = 0; i < n; i++) {
+        trackHash.clear(); cubetti.length = 0;
+        const start = { x: (rnd()-0.5)*60, y: 0, z: (rnd()-0.5)*60, a: rnd()*Math.PI*2 };
+        const goal  = { x: (rnd()-0.5)*60, y: (rnd()-0.5)*4, z: (rnd()-0.5)*60, a: rnd()*Math.PI*2 };
+        p0 = { position: { x: goal.x, y: goal.y, z: goal.z }, rotation: { y: goal.a } };
+        currentPivot = { position: { x: start.x, y: start.y, z: start.z }, rotation: { y: start.a } };
+        const before = cubetti.length;
+        chiudiRaccordo();
+        const nb = cubetti.slice(before);
+        let maxGap = 0, maxKink = 0, minY = Infinity;
+        for (let j = 0; j < nb.length; j++) {
+          minY = Math.min(minY, nb[j].position.y);
+          if (j > 0) {
+            const a = nb[j-1].position, b = nb[j].position;
+            maxGap = Math.max(maxGap, Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z));
+            maxKink = Math.max(maxKink, aDiff(nb[j].rotation.y, nb[j-1].rotation.y));
+          }
+        }
+        const last = nb.length ? nb[nb.length-1].position : start;
+        const finalGap = Math.hypot(last.x-goal.x, last.z-goal.z);
+        worstKink = Math.max(worstKink, maxKink);
+        worstGap = Math.max(worstGap, maxGap);
+        worstFinal = Math.max(worstFinal, finalGap);
+        if (maxKink > 0.20) cusp++;            // > ~11° = sospetto cuspide
+        if (finalGap > dist * 2 || minY < -0.31) fails++;
+      }
+      const ok = fails === 0 && cusp === 0 && worstGap < dist * 1.6;
+      allPass = allPass && ok;
+      log('');
+      log('* Fuzz Dubins (' + n + ' pose casuali)');
+      log('  worstFinalGap=' + worstFinal.toFixed(3) + '  worstKink=' + (worstKink*180/Math.PI).toFixed(1) +
+          'deg  worstGap=' + worstGap.toFixed(3) + '  cusp(>11deg)=' + cusp + '  fails=' + fails);
+      log('  => ' + (ok ? 'OK' : 'FAIL'));
+    }
+    fuzzDubins(500);
+
+    log('\n=== ' + (allPass ? 'TUTTI OK' : 'CI SONO FALLIMENTI') + ' ===');
+  } catch (e) {
+    log('\nERRORE: ' + (e && e.stack ? e.stack : e));
+  }
+})();
+</script>
+</body>
+</html>
